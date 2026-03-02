@@ -138,7 +138,7 @@
 
             <div class="flex flex-col items-center gap-4">
                 <div id="mic-error-msg" class="hidden text-xs text-red-500 font-bold bg-red-50 p-3 rounded-xl text-center w-full">
-                    <i class="fa-solid fa-circle-exclamation mr-1"></i> 請檢查麥克風權限 (需 HTTPS 且點擊允許)
+                    <i class="fa-solid fa-circle-exclamation mr-1"></i> 麥克風啟動失敗。請確保使用 HTTPS 並允許瀏覽器存取麥克風。
                 </div>
                 <button id="record-ctrl-btn" onclick="toggleTest()" class="btn-gold w-full md:w-auto px-8 py-4 rounded-2xl font-black text-lg flex items-center justify-center gap-3 shadow-md active:scale-95 transition-all">
                     <i class="fa-solid fa-microphone" id="btn-icon"></i>
@@ -182,7 +182,7 @@
             </section>
         </div>
 
-        <!-- 02. 文學理解挑戰 (恢復正確題目版) -->
+        <!-- 02. 閱讀測驗區 -->
         <section class="glass-card rounded-3xl p-6 shadow-md">
             <div class="mb-8">
                 <h2 class="text-lg font-black text-slate-800 flex items-center gap-2 mb-1">
@@ -202,7 +202,7 @@
         const targetText = "Suddenly, he feels a sharp pain in his leg. The pain is unbearable, and he grabs his powerless limb in horror. Immediately, he realizes what has happened: his right hamstring is completely torn. All eyes in the crowd are on him, watching him collapse to the ground in pain.";
         const words = targetText.split(/\s+/);
         
-        // --- 朗讀區初始化 ---
+        // --- 初始化朗讀單字 ---
         const wordContainer = document.getElementById('word-container');
         words.forEach((w, i) => {
             const span = document.createElement('span');
@@ -212,7 +212,7 @@
             wordContainer.appendChild(span);
         });
 
-        // --- TTS & STT 邏輯 (保持原有優化功能) ---
+        // --- 語音示範 (TTS) ---
         let speechSynth = window.speechSynthesis;
         let utterance = new SpeechSynthesisUtterance(targetText);
         let isAudioPlaying = false;
@@ -235,19 +235,27 @@
             document.getElementById('audio-icon').className = "fa-solid fa-play";
         };
 
+        // --- 語音辨識核心 (STT) ---
         let recognition;
         let isRecording = false;
         let matchedIndices = new Set();
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-        if (SpeechRecognition) {
-            recognition = new SpeechRecognition();
-            recognition.continuous = true;
-            recognition.interimResults = true;
-            recognition.lang = 'en-US';
-            recognition.onresult = (event) => {
-                let finalTranscript = '';
+        function initRecognition() {
+            if (!SpeechRecognition) return null;
+            const rec = new SpeechRecognition();
+            rec.continuous = true;
+            rec.interimResults = true;
+            rec.lang = 'en-US';
+
+            rec.onstart = () => {
+                isRecording = true;
+                updateUI(true);
+            };
+
+            rec.onresult = (event) => {
                 let interimTranscript = '';
+                let finalTranscript = '';
                 for (let i = event.resultIndex; i < event.results.length; ++i) {
                     if (event.results[i].isFinal) finalTranscript += event.results[i][0].transcript;
                     else interimTranscript += event.results[i][0].transcript;
@@ -255,32 +263,68 @@
                 document.getElementById('live-transcript').textContent = interimTranscript || finalTranscript;
                 processVoice(finalTranscript + interimTranscript);
             };
-            recognition.onerror = () => stopExam();
+
+            rec.onerror = (event) => {
+                console.error("Recognition Error:", event.error);
+                if (event.error === 'not-allowed') {
+                    document.getElementById('mic-error-msg').classList.remove('hidden');
+                }
+                stopExam();
+            };
+
+            rec.onend = () => {
+                if (isRecording) rec.start(); // 意外斷掉自動重啟 (如果是因為超時)
+            };
+            return rec;
         }
 
+        // 頁面載入時先建立物件
+        recognition = initRecognition();
+
         async function startExam() {
-            if (!recognition) return alert("瀏覽器不支援。");
+            if (!recognition) {
+                alert("您的瀏覽器不支援語音辨識，請使用 Chrome 或 Edge。");
+                return;
+            }
+            
             try {
+                // 檢查權限
                 await navigator.mediaDevices.getUserMedia({ audio: true });
+                document.getElementById('mic-error-msg').classList.add('hidden');
+                
                 matchedIndices.clear();
                 words.forEach((_, i) => document.getElementById(`word-${i}`).className = "word-span word-pending");
                 document.getElementById('score-report').classList.add('hidden');
+                
                 recognition.start();
-                isRecording = true;
-                updateUI(true);
             } catch (err) {
+                console.error("Mic Access Error:", err);
                 document.getElementById('mic-error-msg').classList.remove('hidden');
             }
         }
 
         function stopExam() {
-            if (recognition) recognition.stop();
             isRecording = false;
+            if (recognition) {
+                recognition.onend = null; // 暫時關閉自動重啟
+                recognition.stop();
+            }
             updateUI(false);
             if (matchedIndices.size > 0) generateReport();
+            
+            // 重新綁回自動啟動邏輯供下次使用
+            setTimeout(() => {
+                recognition = initRecognition();
+            }, 500);
         }
 
-        function toggleTest() { isRecording ? stopExam() : startExam(); }
+        function toggleTest() {
+            if (isRecording) {
+                stopExam();
+            } else {
+                startExam();
+            }
+        }
 
         function updateUI(active) {
             const btn = document.getElementById('record-ctrl-btn');
@@ -323,7 +367,7 @@
                 const feedbackList = document.getElementById('feedback-list');
                 feedbackList.innerHTML = accuracy > 70 ? 
                     "<li>語調穩定，單字清晰</li><li>嘗試增加連音的流暢度</li>" : 
-                    "<li>錄音不完全或發音不準</li><li>建議點擊'聽示範'再試一次</li>";
+                    "<li>辨識率較低，建議更靠近麥克風</li><li>點擊'聽示範'模仿節奏</li>";
             }, 500);
             document.getElementById('score-report').scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
@@ -340,7 +384,7 @@
             window.requestAnimationFrame(step);
         }
 
-        // --- 恢復原有的複雜閱讀測驗題目 ---
+        // --- 閱讀測驗題目 ---
         const quizData = [
             { 
                 q: "The author uses short fragments like 'One hundred meters. ... One hundred and fifty meters.' What is the primary purpose?", 
